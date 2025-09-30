@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Truss — Draw • Solve • Stress Panel</title>
+<title>Truss — Draw • Solve • Reactions • Stresses</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
 
 <style>
-  :root { --pad:18px; --canvas-w:900px; --canvas-h:560px; --panel-w:320px; }
+  :root { --pad:18px; --canvas-w:900px; --canvas-h:560px; --panel-w:340px; }
   body { background:#f6f7fb; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; margin:20px; }
   h2 { margin:0 0 10px; }
   .row { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
@@ -33,10 +33,16 @@
   #base { z-index:1; } #overlay { z-index:2; pointer-events:auto; cursor:crosshair; }
 
   .panel { width:var(--panel-w); }
-  .list { font-size:13px; max-height:220px; overflow:auto; border:1px dashed #ddd; padding:8px; border-radius:8px; }
+  .list { font-size:13px; max-height:240px; overflow:auto; border:1px dashed #ddd; padding:8px; border-radius:8px; }
   .hint { color:#666; font-size:12px; }
   .swal2-popup { font-size:12px !important; width:auto !important; min-width:360px !important; }
   .swal2-input, .swal2-select { font-size:12px !important; height:28px !important; }
+
+  /* Node panel inputs */
+  .node-row { display:grid; grid-template-columns: 54px 1fr 1fr 28px; gap:6px; align-items:center; }
+  .node-row > .badge { justify-self:start; font-weight:600; color:#334155; }
+  .node-row input[type="number"]{ width:100%; height:28px; padding:0 6px; border-radius:6px; }
+  .node-row button { height:28px; padding:0 8px; }
 
   #stressPanelBlock { display:none; }
   #stressPanel { width:100%; height:260px; position:static; border:1px solid #ccc; border-radius:8px; }
@@ -109,7 +115,10 @@
       </div>
 
       <div>
-        <div><strong>Nodes</strong></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong>Nodes (editable)</strong>
+          <span class="hint">Edit X/Y to move nodes</span>
+        </div>
         <div id="nodeList" class="list"></div>
       </div>
 
@@ -374,9 +383,7 @@
   document.getElementById('btnResetView').onclick = () => { stopAnim(); lastSolution=null; selectedMemberId=null; draw(); };
 
   // Animate controls
-  document.getElementById('btnAnimate').onclick = () => {
-    if (anim.on) stopAnim(); else startAnim();
-  };
+  document.getElementById('btnAnimate').onclick = () => { if (anim.on) stopAnim(); else startAnim(); };
   animFreq.addEventListener('input', () => { animFreqVal.textContent = animFreq.value; });
 
   function startAnim(){
@@ -384,15 +391,14 @@
     anim.on = true; anim.t0 = 0;
     const btn = document.getElementById('btnAnimate');
     btn.textContent = 'Stop';
-    btn.classList.add('active');               // gray out while active
-
+    btn.classList.add('active'); // gray while active
     const tick = (ts)=>{
       if (!anim.on){ anim.raf=null; return; }
       if (!anim.t0) anim.t0 = ts;
-      const t = (ts - anim.t0) / 1000;               // seconds
+      const t = (ts - anim.t0) / 1000;
       const f = parseFloat(document.getElementById('animFreq').value) || 1;
       const base = parseFloat(document.getElementById('defScale').value) || 1;
-      const amp = 0.5 * (1 - Math.cos(2*Math.PI*f*t));   // [0,1]
+      const amp = 0.5 * (1 - Math.cos(2*Math.PI*f*t));
       anim.scaleOverride = base * amp;
       if (viewMode === 'def') draw();
       anim.raf = requestAnimationFrame(tick);
@@ -445,11 +451,16 @@
     if (mode==='draw' && dragStart){
       hoverEndNodeId = nearNodeId(x,y);
       draw();
+
+      // live segment
       ovr.save();
       ovr.lineWidth=2; ovr.setLineDash([6,4]); ovr.strokeStyle='#3a86ff';
       ovr.beginPath(); ovr.moveTo(dragStart.x,dragStart.y); ovr.lineTo(x,y); ovr.stroke();
       if (dragStart.existingStart) highlightNode(ovr, nodeById(dragStart.nodeId));
       if (hoverEndNodeId)        highlightNode(ovr, nodeById(hoverEndNodeId));
+
+      // live coordinate tag at current mouse (candidate end node)
+      drawCoordTag(ovr, x, y, `(${x.toFixed(1)}, ${y.toFixed(1)})`);
       ovr.restore();
       return;
     }
@@ -480,7 +491,6 @@
           const info = getMemberHoverInfo(mid, {x,y});
           if (info){
             hoverInfo = { x:x+12, y:y-12, lines:info };
-            drawHoverTooltip(ovr, hoverInfo);
           }
         }
       } else if (nid){
@@ -488,10 +498,15 @@
         ovr.save(); ovr.fillStyle='rgba(16,185,129,0.22)';
         ovr.beginPath(); ovr.arc(n.x,n.y,10,0,Math.PI*2); ovr.fill(); ovr.restore();
         overlay.style.cursor='pointer';
+
+        // Show node coordinate tag on hover
+        drawCoordTag(ovr, n.x+12, n.y-12, `(${n.x.toFixed(1)}, ${n.y.toFixed(1)})`);
       } else {
         overlay.style.cursor='pointer';
       }
     }
+
+    if (hoverInfo) drawHoverTooltip(ovr, hoverInfo);
   });
 
   overlay.addEventListener('mouseup', (e)=>{
@@ -504,10 +519,10 @@
       else { const id=addNode(x,y); endNode=nodeById(id); }
       if (endNode.id===dragStart.nodeId){
         if (dragStart.createdStart){ nodes.pop(); }
-        dragStart=null; hoverEndNodeId=null; draw(); return;
+        dragStart=null; hoverEndNodeId=null; refreshLists(); draw(); return;
       }
       const mid=addMember(dragStart.nodeId, endNode.id);
-      dragStart=null; hoverEndNodeId=null; draw();
+      dragStart=null; hoverEndNodeId=null; refreshLists(); draw();
       if (mid) editMember(memberById(mid));
       return;
     }
@@ -710,8 +725,13 @@
     for (const n of nodes){
       drawNodeBC(ctx, n);
       drawNodeLoadsAndSprings(ctx, n);
+
+      // node dot
       ctx.save(); ctx.fillStyle='#1d4ed8';
       ctx.beginPath(); ctx.arc(n.x,n.y,4,0,Math.PI*2); ctx.fill(); ctx.restore();
+
+      // coordinate tag next to node
+      drawCoordTag(ctx, n.x+10, n.y-12, `(${n.x.toFixed(1)}, ${n.y.toFixed(1)})`);
     }
 
     // Support reactions (if available)
@@ -764,13 +784,12 @@
       const {Rx, Ry} = reactionsByNode[nid];
 
       if (Math.abs(Rx) > 1e-12){
-        const dir = Math.sign(Rx) || 1; // + to right
+        const dir = Math.sign(Rx) || 1;
         const len = 20 + 16*Math.min(1, Math.abs(Rx)/ (Math.abs(Rx)+1e-9));
         drawArrow(g, n.x, n.y, n.x + dir*len, n.y);
         g.fillText(`Rx=${round6(Rx)}`, n.x + dir*(len+6), n.y - 6);
       }
       if (Math.abs(Ry) > 1e-12){
-        // +Ry is up in structural sign; yCanvas flips later, so draw arrow "up" as negative on canvas
         const up = Ry>0; const len = 20 + 16*Math.min(1, Math.abs(Ry)/ (Math.abs(Ry)+1e-9));
         drawArrow(g, n.x, n.y, n.x, n.y + (up ? -len : +len));
         g.fillText(`Ry=${round6(Ry)}`, n.x + 6, n.y + (up ? -len-6 : len+14));
@@ -1197,7 +1216,6 @@
     const m = memberById(memId); if (!m) return null;
     const a=nodeById(m.n1), b=nodeById(m.n2);
     const tCanvas = pointToSegmentProjectionT(Pcanvas, a, b);
-    // Build cumulative length in "up" coords to match stress samples
     const st = lastSolution.stress[memId]; if (!st) return null;
     const xs=[0]; let Lsum=0;
     for (let i=1;i<st.pts.length;i++){
@@ -1205,30 +1223,93 @@
       Lsum += Math.hypot(x1-x0, y1-y0);
       xs.push(Lsum);
     }
-    // where is the projected point along in up-space?
     const pi = lastSolution.anodes[lastSolution.geom[memId].i];
     const pj = lastSolution.anodes[lastSolution.geom[memId].j];
     const Px_up = pi.x_up + tCanvas*(pj.x_up - pi.x_up);
     const Py_up = pi.y_up + tCanvas*(pj.y_up - pi.y_up);
-    // find nearest sample index
     let bestK=0, bestD=Infinity, run=0;
     for (let k=0;k<st.pts.length;k++){
       const dx = st.pts[k].x_up - Px_up, dy = st.pts[k].y_up - Py_up;
       const d = dx*dx + dy*dy;
       if (d<bestD){ bestD=d; bestK=k; run=xs[k]; }
     }
-
     const Nbar = (lastSolution.axial[memId]?.N?.[0]) || 0;
     const sL = st.sL[bestK] ?? 0;
     const sR = st.sR[bestK] ?? 0;
     const sense = (Nbar>=0) ? 'tension' : 'compression';
-
     return [
       `${m.label||`M${memId}`}`,
       `N = ${round6(Nbar)} (${sense})`,
       `x ≈ ${round6(run)} along`,
       `σL = ${round6(sL)}, σR = ${round6(sR)}`
     ];
+  }
+
+  // ======= NODE PANEL (editable X/Y) =======
+  function refreshLists(){
+    // Nodes: editable X/Y inputs that live-update geometry
+    nodeList.innerHTML = nodes.map(n =>
+      `<div class="node-row">
+         <span class="badge">Node ${n.id}</span>
+         <input type="number" class="nedit" data-id="${n.id}" data-field="x" step="any" value="${n.x}">
+         <input type="number" class="nedit" data-id="${n.id}" data-field="y" step="any" value="${n.y}">
+         <button class="ghost" data-del-node="${n.id}" title="Delete node">✖</button>
+       </div>`
+    ).join('') || '<div class="hint">No nodes yet.</div>';
+
+    memberList.innerHTML = members.map(m =>
+      `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+         <span>Member ${m.id} [${m.label||''}]: n${m.n1}–n${m.n2} | E=${fmt(m.E)} A=${fmt(m.A)} I=${fmt(m.I)} S=${fmt(m.S)} wd=${fmt(m.wd)} qx=${fmt(m.qix)}→${fmt(m.qjx)} qy=${fmt(m.qiy)}→${fmt(m.qjy)}</span>
+         <button class="ghost" data-del-member="${m.id}" title="Delete member">✖</button>
+       </div>`
+    ).join('') || '<div class="hint">No members yet.</div>';
+  }
+  const fmt = v => (v===0 || isNaN(v)) ? '0' : String(v);
+
+  // Node panel: delete
+  nodeList.addEventListener('click', (e)=>{
+    const btn = e.target.closest('[data-del-node]');
+    if (!btn) return;
+    const id = parseInt(btn.getAttribute('data-del-node'),10);
+    deleteNodeWithMembers(id);
+  });
+
+  // Node panel: live-edit X/Y (input = live update + draw; change = refresh row formatting)
+  nodeList.addEventListener('input', (e)=>{
+    const inp = e.target.closest('.nedit');
+    if (!inp) return;
+    const id = parseInt(inp.dataset.id,10);
+    const field = inp.dataset.field;
+    const n = nodeById(id); if (!n) return;
+    const val = parseFloat(inp.value);
+    if (!isFinite(val)) return;
+    n[field] = val;
+    lastSolution = null; // geometry changed
+    draw();
+  });
+  nodeList.addEventListener('change', (e)=>{
+    const inp = e.target.closest('.nedit');
+    if (!inp) return;
+    // On commit, re-render list so numbers are normalized
+    refreshLists();
+  });
+
+  // ===== Canvas helpers =====
+  function drawCoordTag(g, x, y, text){
+    const padX = 6, padY = 4;
+    g.save();
+    g.font='11px system-ui';
+    const w = g.measureText(text).width + 2*padX;
+    const h = 18;
+    const xx = Math.min(Math.max(4, x), g.canvas.width - w - 4);
+    const yy = Math.min(Math.max(4, y - h), g.canvas.height - h - 4);
+    g.fillStyle='rgba(17,24,39,0.82)';
+    g.strokeStyle='rgba(255,255,255,0.15)';
+    g.lineWidth=1;
+    g.beginPath(); g.rect(xx, yy, w, h); g.fill(); g.stroke();
+    g.fillStyle='#fff';
+    g.fillText(text, xx + padX, yy + 12);
+    g.restore();
   }
 
   function drawHoverTooltip(g, tip){
@@ -1261,7 +1342,7 @@
       }
     }
   }
-  function matPick(A, rows, cols){ const M=rows.length,N=cols.length,out=new Array(M); for(let i=0;i<M;i++){ out[i]=new Array(N); for(let j=0;j<N;j++) out[i][j]=A[rows[i]][cols[j]]; } return out; }
+  function matPick(A, rows, cols){ const M=rows.length,N=cols.length,out=new Array(M); for(let i=0;i<M;i++){ out[i]=new Array(N); for (let j=0;j<N;j++) out[i][j]=A[rows[i]][cols[j]]; } return out; }
   function vecPick(v, rows){ return rows.map(i=>v[i]); }
   function getAnalysisIdForPrimary(pid, anodes){ for (const [aid,obj] of Object.entries(anodes)){ if (obj.primary===pid) return parseInt(aid,10); } return null; }
   function zeros(n,m){ if (m===undefined){ const v=new Array(n); for (let i=0;i<n;i++) v[i]=0; return v; } const A=new Array(n); for (let i=0;i<n;i++){ A[i]=new Array(m); for (let j=0;j<m;j++) A[i][j]=0; } return A; }
@@ -1305,36 +1386,6 @@
   }
 
   // ===== Lists & Results =====
-  function refreshLists(){
-    nodeList.innerHTML = nodes.map(n =>
-      `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-         <span>Node ${n.id}: (${n.x.toFixed(1)}, ${n.y.toFixed(1)}), bc=${n.bc}, Fx=${n.Fx}, Fy=${n.Fy}, Kx=${n.Kx}, Ky=${n.Ky}</span>
-         <button class="ghost" data-del-node="${n.id}" title="Delete node">✖</button>
-       </div>`
-    ).join('') || '<div class="hint">No nodes yet.</div>';
-
-    memberList.innerHTML = members.map(m =>
-      `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-         <span>Member ${m.id} [${m.label||''}]: n${m.n1}–n${m.n2} | E=${fmt(m.E)} A=${fmt(m.A)} I=${fmt(m.I)} S=${fmt(m.S)} wd=${fmt(m.wd)} qx=${fmt(m.qix)}→${fmt(m.qjx)} qy=${fmt(m.qiy)}→${fmt(m.qjy)}</span>
-         <button class="ghost" data-del-member="${m.id}" title="Delete member">✖</button>
-       </div>`
-    ).join('') || '<div class="hint">No members yet.</div>';
-  }
-  const fmt = v => (v===0 || isNaN(v)) ? '0' : String(v);
-
-  nodeList.addEventListener('click', (e)=>{
-    const btn = e.target.closest('[data-del-node]');
-    if (!btn) return;
-    const id = parseInt(btn.getAttribute('data-del-node'),10);
-    deleteNodeWithMembers(id);
-  });
-  memberList.addEventListener('click', (e)=>{
-    const btn = e.target.closest('[data-del-member]');
-    if (!btn) return;
-    const id = parseInt(btn.getAttribute('data-del-member'),10);
-    deleteMember(id);
-  });
-
   function showResults(primaryRes){
     resultList.innerHTML = primaryRes.map(r =>
       `<div>Node ${r.id}: ux=${r.ux}, uy=${r.uy}</div>`
@@ -1363,3 +1414,4 @@
 </script>
 </body>
 </html>
+
